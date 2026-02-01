@@ -1,0 +1,31 @@
+# Private - Do NOT commit (Cass-specific files)
+Cass.pdf
+Cass_*.md
+CLAUDE.md
+*.esp
+*.esm
+*.ba2
+*.BACKUP.md
+nul
+
+# Claude Code cache
+.claude/
+
+# CK specific files
+*.psc
+*.pex
+
+# Archive files
+*_ARCHIVE.md
+
+# Empty/Placeholder files
+DK_Companion_Cass_Script_Properties.md
+
+# System files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE/Editor folders
+.vscode/
+.idea/
