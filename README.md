@@ -22,12 +22,12 @@ Example implementation available when Nexus release of my companion comes out.
 
 ## Why This Exists
 
-Bethesda built a robust companion system for Starfield that vanilla companions barely utilize. These docs aim to:
+Bethesda built a deep, flexible companion system for Starfield — per-companion affinity reactions, a 5-tier approval scale, anger tracking, story gates, personal crime factions. The vanilla companions genuinely use it; the problem is they all use it the *same way*. Four different backstories, one shared moral compass — the community's verdict boiled down to "Be good. Don't steal. Murder bad." Even the Vanguard's Aceles-or-Microbe decision, the game's flagship "your companion will react" moment, produces near-identical opinions across the crew. The system's expressive range is far wider than what shipped. These docs aim to:
 
 1. **Reverse-engineer** how the system actually works
 2. **Document** the scripts, properties, and systems involved
 3. **Provide** a practical example (Cass) that others can learn from
-4. **Enable** modders to create companions equal to or better than vanilla
+4. **Enable** modders to create companions that feel genuinely distinct — equal to or better than vanilla
 
 ## Key Technical Discoveries
 
