@@ -11,6 +11,11 @@ This repository contains **documentation only** - no mod files, no copyrighted c
 |----------|-------------|
 | `Companion_System_Reference.md` | Technical API reference for Starfield's companion scripts |
 | `Companion_Creation_Guide.md` | Step-by-step guide for creating a companion from scratch |
+| `DRAFT_Affinity_Events_Section.md` | Affinity Events design section (worksheet format) written for *Aflin & DJLegend's Starfield NPC Template* — fire conditions verified against the vanilla Papyrus sources |
+| `CompanionAffinityEvents.csv` | Data dump of every vanilla affinity event form (~46 Action, ~319 CommentTrigger, plus DialogueResponse/WantsToTalk/Direct) with descriptions and per-companion reactions — source data for the section above |
+
+### Aflin & DJLegend's Starfield NPC Template
+The Affinity Events section here is our contribution to the **Starfield NPC Template**, a designer-to-scripter worksheet co-authored with [Aflin](https://www.nexusmods.com/skyrimspecialedition/mods/138633) (author of the original Skyrim NPC Template). **Aflin will be releasing the Starfield template on Nexus soon** — once it's live, a link will be added here. The three docs are designed to work together: the Template covers *what to write*, the Creation Guide *how to build it*, and the System Reference *why it works*.
 
 ### Example Implementation
 Example implementation available when Nexus release of my companion comes out.
@@ -31,6 +36,9 @@ Bethesda built a robust companion system for Starfield that vanilla companions b
 - **Story Gates:** Vanilla provides `COM_StoryGate_TimerDuration_01-08_Standard` GlobalVariables
 - **Distance:** Starfield uses meters (not old Bethesda units)
 - **Crime Response:** Personal Crime Factions control which NPCs companions consider "civilians"
+- **Dead event:** `COM_Event_Action_UseWorkbench` never fires in vanilla — its handler is commented out in `CompanionAffinityEventsScript.psc` (bug GEN-432521)
+- **Unreachable event:** `COM_Event_Action_ZeroG` can't fire via the automatic gravity check (the below-0.5g branch catches zero gravity first as GravityLow); quests must send it directly
+- **Affinity throttling:** all action events share one global cooldown, and events are dropped (not queued) during dialogue and scenes; Steal/Pickpocket also require the companion to have line-of-sight on the player
 
 ## Scripts Documented
 
@@ -46,6 +54,7 @@ Bethesda built a robust companion system for Starfield that vanilla companions b
 - **Craftian** - Original Cass character concept
 - **Demetri (DJLegnds)** - Creation Kit implementation & testing
 - **Claude** - Documentation & dialogue writing
+- **Aflin** - Original NPC Template format & Starfield Template co-author
 
 ## Contributing
 
@@ -57,4 +66,4 @@ Documentation is provided freely for educational purposes. Use it to make cool c
 
 ---
 
-*Last Updated: 2026-02-01*
+*Last Updated: 2026-07-01*
