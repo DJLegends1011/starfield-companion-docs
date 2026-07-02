@@ -4,6 +4,8 @@
 
 This document reverse-engineers the vanilla companion system using Andreja as an implementation example. The systems, functions, and structures described apply universally to ALL companions.
 
+*v1.2 (2026-07-01): full verification pass against the vanilla Papyrus sources. All function signatures, property names, and call chains now match source. New in this version: the affinity event sending pipeline (Section 7), dismissal side effects (Section 3), the ActiveCompanionChanged CustomEvent (Section 3), and the built-in Andreja jealousy hook (Section 9).*
+
 **Key Sections:**
 - **[Script Architecture](#1-script-architecture)** - How components connect
 - **[Core Systems](#2-sq_actorrolesscript---foundation)** - Quest and actor scripts
@@ -115,8 +117,8 @@ EndGroup
 |----------|------------|---------|---------|
 | `SetRoleAvailable` | Actor, DisplayMsg | void | Makes actor eligible |
 | `SetRoleUnavailable` | Actor, DisplayMsg | void | Removes eligibility |
-| `SetRoleActive` | Actor, DisplayMsg, AlsoSetAvailable | void | Activates actor |
-| `SetRoleInactive` | Actor, DisplayMsg, AlsoSetUnavailable | void | Deactivates actor |
+| `SetRoleActive` | Actor, DisplayMsg, AlsoSetAvailable=**true**, MessageFloat1=0.0, MessageFloat2=0.0 | void | Activates actor (auto-calls SetRoleAvailable and, at the end, EvaluatePackage) |
+| `SetRoleInactive` | Actor, DisplayMsg, AlsoSetUnavailable=**false** | void | Deactivates actor (stays *available* by default — re-recruitable) |
 | `IsRoleActive` | Actor | bool | Check if active |
 | `IsRoleAvailable` | Actor | bool | Check if available |
 | `GetActiveActor` | none | Actor | Get first/only active |
@@ -136,10 +138,15 @@ Function _UpdateActorValue(Actor ActorToUpdate, ActorValue ActorValueToUpdate, b
     ; Prevent AV reset when player first sees actor
     SQ_PreventRecalc.AddRef(ActorToUpdate)
 
-    int value = TurnOn ? 1 : 0
+    int value = 0
+    if TurnOn
+        value = 1
+    endif
     ActorToUpdate.SetValue(ActorValueToUpdate, value)
 EndFunction
 ```
+
+*(Reminder: Papyrus has no ternary operator — all conditionals are if/endif blocks.)*
 
 **Critical:** Prevents companion stats from being reset when first loaded!
 
@@ -154,18 +161,27 @@ EndFunction
 ### Key Properties
 
 ```papyrus
-Group Affinity_Props
-    ActorValue Property COM_Affinity               ; Current affinity value
-    ActorValue Property COM_AffinityLevel          ; 0-3 level
-    GlobalVariable Property COM_AffinityLevelGV    ; Global for conditions
+; (abridged — group and property names match source)
+Group Affinity
+    ActorValue Property COM_Affinity                        ; Current affinity value
+    ActorValue Property COM_AffinityLevel                   ; 0-3 level
+    GlobalVariable Property COM_AffinityLevel_0_Neutral     ; level enum globals:
+    GlobalVariable Property COM_AffinityLevel_1_Friendship  ;   read the level by comparing
+    GlobalVariable Property COM_AffinityLevel_2_Affection   ;   the AV against these
+    GlobalVariable Property COM_AffinityLevel_3_Commitment
+    GlobalVariable[] Property COM_AffinityLevel_EnumGlobals
+    AffinityLevelDatum[] Property AffinityLevelData
 EndGroup
 
-Group Anger_Props
+Group Anger
     ActorValue Property COM_AngerLevel
-    ActorValue Property COM_AngerLevelLastNotified
+    ActorValue Property COM_AngerSceneCompleted
+    ActorValue Property COM_AngerReason
+    GlobalVariable Property COM_AngerLevel_0_NotAngry       ; also _1_Annoyed, _2_Angry, _3_Furious
+    AngerLevelDatum[] Property AngerLevelData
 EndGroup
 
-Group Sleep_Props
+Group Romance
     Keyword Property COM_SleepTopic_PlayerWakesUp
     Keyword Property COM_SleepTopic_WakeUpInPlayersBed
 EndGroup
@@ -182,41 +198,55 @@ Function _CustomSetRoleActive(Actor ActorToUpdate, Actor PriorActiveActor)
         SetRoleInactive(PriorActiveActor)
     endif
 
-    ; 2. Remove elite crew
-    SQ_Crew.SetEliteCrewInactive(ActiveEliteCrew.GetActorReference())
+    ; 2. Remove elite crew (they say their unassigned line)
+    SQ_Crew.SetEliteCrewInactive(ActiveEliteCrew.GetActorReference(), sayUnassignedLine = true)
 
     ; 3. ALSO set as FOLLOWER (enables following behavior)
-    SQ_Followers.SetRoleActive(ActorToUpdate, DisplayMessageIfChanged = false)
+    SQ_Followers.SetRoleActive(ActorToUpdate, DisplayMessageIfChanged = false, AlsoSetAvailable = true)
 
     ; 4. Make available as crew
     SQ_Crew.SetRoleAvailable(ActorToUpdate)
 
-    ; 5. Fire companion changed event
-    _SendActiveCompanionChanged(ActorToUpdate, PriorActiveActor)
+    ; 5. Fire companion changed event — ONLY if the companion actually changed
+    if PriorActiveActor != ActorToUpdate
+        _SendActiveCompanionChanged(ActorToUpdate, PriorActiveActor)
+    endif
 EndFunction
 ```
 
 **Key Insight:** `SQ_Companions.SetRoleActive()` internally calls `SQ_Followers.SetRoleActive()`!
 
-### Affinity Level Functions
+### Dismissal Side Effects (_CustomSetRoleInactive)
+
+Dismissing is not just "stop following." `_CustomSetRoleInactive` also:
+- Calls `SQ_Followers.SetRoleInactive()`
+- Fires `_SendActiveCompanionChanged(None, DismissedActor)`
+- Stops the companion's combat
+- Fake-assigns then unassigns the companion as crew, so they walk back to the ship
+
+**Important default:** `SetRoleInactive()` has `AlsoSetUnavailable = false` by default — a dismissed companion **stays available** and can be re-recruited through dialogue.
+
+### ActiveCompanionChanged CustomEvent
+
+`SQ_CompanionsScript` fires a `ActiveCompanionChanged` CustomEvent whenever the active companion changes, with args struct `{NewActiveCompanion, OldActiveCompanion}` (helper: `GetActiveCompanionChangedArgsStruct()`). External scripts can `RegisterForCustomEvent(SQ_Companions, "ActiveCompanionChanged")` — the clean hook for reacting to companion swaps (including cross-mod companion detection).
+
+### Companion Check Functions
+
+To check a companion's affinity level, read the `COM_AffinityLevel` actor value directly (set via `SetAffinityLevel()`, read via `GetValueEnumGlobal(COM_AffinityLevel, COM_AffinityLevel_EnumGlobals)` or a plain `GetValue()` compare) — the script provides no per-level convenience wrappers. The check functions it does provide:
 
 ```papyrus
-bool Function IsCompanionFriendship(Actor ActorToCheck)
-    return ActorToCheck.GetValue(COM_AffinityLevel) >= 1
+bool Function IsCompanion(Actor ActorToCheck, bool IncludeAvailableCompanions = true)
+
+bool Function IsCompanionRomantic(CompanionActorScript Companion)
+    return Companion.GetValue(SQ_Companions.COM_IsRomantic) >= 1
 EndFunction
 
-bool Function IsCompanionAffection(Actor ActorToCheck)
-    return ActorToCheck.GetValue(COM_AffinityLevel) >= 2
-EndFunction
-
-bool Function IsCompanionCommitment(Actor ActorToCheck)
-    return ActorToCheck.GetValue(COM_AffinityLevel) >= 3
-EndFunction
-
-bool Function IsCompanionRomantic(Actor ActorToCheck)
-    return _CheckRole(ActorToCheck, Alias_Romantic)
+bool Function IsCompanionLockedIn()
+    ; true when COM_PQ_LockedInCompanion > -1 (a quest has locked the companion)
 EndFunction
 ```
+
+Note `IsCompanionRomantic` takes a `CompanionActorScript`, not a plain `Actor`.
 
 ---
 
@@ -232,19 +262,23 @@ EndFunction
 |----------|---------|
 | `CommandFollow(Actor)` | Tell follower to follow player |
 | `CommandWait(Actor)` | Tell follower to wait in place |
-| `TeleportFollowerToShip(Actor, ShipRef)` | Move follower to ship |
+| `TeleportWaitingFollowersToShip(Location akNewLoc = None)` | Move waiting followers to the ship |
+| `TeleportFollowers(ObjectReference DestinationRef, Actor[] SpecificFollowersToTeleport = None, ...)` | General follower teleport |
 | `SetIdleChatterTimes(Actor, IsFollower)` | Configure talk frequency |
+| `GetScript() global` | `Game.GetFormFromFile(0x0000D773, "Starfield.esm")` — lets external scripts grab SQ_Followers without a property |
 
 ### _CustomSetRoleActive Override
 
 ```papyrus
+; (paraphrased — source declares the AVs locally, e.g.
+;  ActorValue aggressionAV = Game.GetAggressionAV())
 Function _CustomSetRoleActive(Actor ActorToUpdate, Actor PriorActiveActor)
     SetGroupFormationFactionData(ActorToUpdate)
     ActorToUpdate.SetPlayerTeammate(true, abCanDoFavor = false)
     SetIdleChatterTimes(ActorToUpdate, IsFollower = true)
     ActorToUpdate.SetNotShowOnStealthMeter(true)
-    ActorToUpdate.SetValue(Cached_PreFollowerAggression, aggression)
-    ActorToUpdate.SetValue(aggressionAV, 0)
+    ActorToUpdate.SetValue(Cached_PreFollowerAggression, aggression)  ; cache current aggression
+    ActorToUpdate.SetValue(aggressionAV, 0)                           ; then zero it while following
     CommandFollow(ActorToUpdate)
 EndFunction
 ```
@@ -292,6 +326,12 @@ Function AddAffinity(int AmountToAdd)
     AddPassiveAffinity(AmountToAdd as Float)
     COM_CompanionQuest.CheckAndSetWantsToTalk()
 EndFunction
+
+; Story gate helpers (useful for testing and quest fragments):
+Function AllowStoryGatesAndRestartTimer()   ; removes COM_PreventStoryGateScenes keyword + restarts gate timer
+Function RestartStoryGateTimer(int nextStoryGate = 1)
+int Function GetCompanionIDValueInt()
+bool Function HasGreaterAffinityThanTestedCompanion()
 ```
 
 ### OnDeath Event
@@ -345,6 +385,25 @@ Group WantsToTalk
     ConditionForm Property WantsToTalkConditionForm Mandatory Const Auto
     int Property WantsToTalkObjective = 10 Const Auto
 EndGroup
+
+Group Autofill
+    ; NOTE: includes Companion_Andreja and COM_Event_PlayerBecomesRomantic_AndrejaJealous —
+    ; EVERY quest using this script must fill the Andreja-related properties (they drive
+    ; the vanilla jealousy check in MakeRomantic; see Section 9)
+EndGroup
+
+Group AdditionalData
+    Perk Property CompanionCheckPerk Mandatory Const Auto
+    ; per-companion perk used for dialogue interjections
+EndGroup
+
+Group Flirting
+    GlobalVariable Property COM_FlirtCooldownDays Mandatory Const Auto
+    ActorValue Property COM_FlirtCount Mandatory Const Auto
+    ActorValue Property COM_FlirtCooldownExpiry Mandatory Const Auto
+    ActorValue Property COM_FlirtChoice Mandatory Const Auto
+    int Property FlirtChoiceMax = 2 Const Auto
+EndGroup
 ```
 
 ### Event Registrations
@@ -371,6 +430,8 @@ EndEvent
 | `FlirtSceneEnded()` | Flirt conversation ends |
 | `StoryGateSceneCompleted()` | Story gate conversation ends |
 | `AngerSceneCompleted()` | Anger confrontation ends |
+| `TalkAboutQuestEventSceneEnded(ActorValue)` | Quest-event conversation ends |
+| `RomanceSceneEndedRomantic()` | Romance scene ends with player choosing romance |
 
 ---
 
@@ -395,13 +456,39 @@ EndEvent
 | DISLIKES | `COM_EventReaction_Dislikes` | -15 |
 | HATES | `COM_EventReaction_Hates` | -35 |
 
+*(Point values are GlobalVariable data, confirmed against the CK data dump rather than script source.)*
+
+### Affinity Event Sending Pipeline (CompanionAffinityEventsScript)
+
+The receiving side (below and Section 15) is only half the system. All `COM_Event_Action_*` events are **sent** by one vanilla quest script: `CompanionAffinityEventsScript.psc`. `AffinityEvent` itself is a native Form type with just two functions — `Send(ObjectReference akTarget = None)` and `Reset()`.
+
+**The full chain:**
+```
+CompanionAffinityEventsScript (sender quest — watches player actions)
+    └─► AffinityEvent.Send()
+          └─► CompanionAffinityScript.OnAffinityEvent (on each qualifying actor)
+                ├─► anger check (AngerEventData)
+                └─► SQ_Companions.SQ_Traits.HandleAffinityEvent()  (points applied)
+```
+
+**Send-gating rules (why lines don't always play):**
+- **One global cooldown for ALL action events:** `COM_ActionEventScriptFilter_CoolDownMinutes` (minutes × 60). After any action event fires, all others are suppressed until it expires. A FormList (`COM_IgnoreAffinityEventCooldownOnChangeLocation_Locations`) lets specific locations bypass it for Arrival.
+- **Events are dropped, not queued,** when the script is cooling down, the player is in dialogue, the companion is in a scene, or player/companion is within 20m of a configured "important scene" (`ImportantSceneData`).
+- **Steal/Pickpocket require line-of-sight:** `CompanionRef.HasDetectionLOS(PlayerRef)` — the companion must see the theft.
+- **Gravity thresholds:** high > 1.5g, low < 0.5g, polled after location changes. ⚠ The ZeroG branch is **unreachable** (`< 0.5` matches GravityLow before `<= 0` is tested) — quests must `Send()` `COM_Event_Action_ZeroG` directly.
+- ⚠ **`COM_Event_Action_UseWorkbench` is dead:** its handler is commented out in vanilla ("no companion lines were written for this", bug GEN-432521).
+
+**Modding implication:** to fire a vanilla action event from your own quest, just call `TheEvent.Send()`. To add reactions to existing events, no script is needed — reactions are data on the AffinityEvent form.
+
 ### Level Progression Functions
 
 ```papyrus
 Function StartPersonalQuest()
+    StoryGateSceneCompleted()   ; increments the gate counter + starts next timer FIRST
     SetAffinityLevel(COM_AffinityLevel_1_Friendship)
     PersonalQuest.Start()
     CompanionRef.SetValue(COM_PersonalQuest_Started, 1)
+    ; (ends by showing a text-replaced "advancing quest" warning message)
 EndFunction
 
 Function FinishedPersonalQuest()
@@ -419,8 +506,9 @@ EndFunction
 | Level | Global Variable | Effect |
 |-------|-----------------|--------|
 | 0 | `COM_AngerLevel_0_NotAngry` | Normal |
-| 1 | `COM_AngerLevel_1_Irritated` | Dialogue changes |
-| 2 | `COM_AngerLevel_2_Angry` | May leave |
+| 1 | `COM_AngerLevel_1_Annoyed` | Dialogue changes |
+| 2 | `COM_AngerLevel_2_Angry` | May leave, confrontation possible |
+| 3 | `COM_AngerLevel_3_Furious` | Will leave, relationship damaged |
 
 ### Anger Functions
 
@@ -437,8 +525,13 @@ EndFunction
 
 Function StartAngerCoolDownTimer()
     float coolDownTimerDur = SQ_Companions.GetAngerCoolDownTimerDuration(CompanionRef)
-    StartTimerGameTime(coolDownTimerDur, GameTimerID_AngerCoolDown)
-    CompanionRef.SetValue(COM_AngerCoolDownTimerExpired, 0)
+    if coolDownTimerDur > -1
+        StartTimerGameTime(coolDownTimerDur, GameTimerID_AngerCoolDown)
+        CompanionRef.SetValue(COM_AngerCoolDownTimerExpired, 0)
+    else
+        CancelTimerGameTime(GameTimerID_AngerCoolDown)  ; -1 duration = no cooldown timer
+    endif
+    CheckAndSetWantsToTalk()
 EndFunction
 ```
 
@@ -485,7 +578,10 @@ Element 2: COM_AngerReason_YourName_SpecificBetrayal
 ```papyrus
 Function MakeRomantic()
     CompanionRef.SetValue(COM_IsRomantic, 1)
-    CompanionRef.SetValue(COM_HasBeenRomantic, 1)
+    if CompanionRef.GetValue(COM_HasBeenRomantic) < 1
+        CompanionRef.SetValue(COM_HasBeenRomantic, 1)   ; first-time flag, set once
+    endif
+    PossiblyMakeAndrejaJealous()
 EndFunction
 
 Function MakeNotRomantic()
@@ -493,6 +589,8 @@ Function MakeNotRomantic()
     CommitmentDesired(false)
 EndFunction
 ```
+
+> ⚠ **The Andreja jealousy hook is baked into the shared script.** `PossiblyMakeAndrejaJealous()` fires `COM_Event_PlayerBecomesRomantic_AndrejaJealous.Send(romanticCompanion)` whenever the player romances anyone while Andreja is romantic. This means **romancing a CUSTOM companion will anger a romanced Andreja** automatically — no extra work needed (or possible to skip, short of modifying the event).
 
 ### Commitment Functions
 
@@ -504,6 +602,10 @@ Function CommitmentDesired(bool Desired = true)
         CompanionRef.setValue(COM_CommitmentDesired, 0)
     endif
     CompanionRef.SetValue(COM_CommitmentPossible, 1)
+    ; If the current story gate timer already expired ("I need some time" case),
+    ; the source also resets that AV and starts a short 600s delay timer:
+    ;   CompanionRef.SetValue(COM_CurrentStoryGateTimerExpired, 0)
+    ;   StartTimer(600, TimerID_StoryGate)
 EndFunction
 
 Function StartCommitmentQuest()
@@ -551,15 +653,13 @@ In your `COM_Companion_YourName` quest's script properties:
 
 **Example Configuration:**
 ```
-Element 0: GateNumber=1, TimerDuration=COM_SG_Timer_1800 (30 min)
-Element 1: GateNumber=2, TimerDuration=COM_SG_Timer_3600 (1 hour)
-Element 2: GateNumber=3, TimerDuration=COM_SG_Timer_5400 (1.5 hours)
-Element 3: GateNumber=4, TimerDuration=COM_SG_Timer_7200 (2 hours)
-Element 4: GateNumber=5, TimerDuration=COM_SG_Timer_3600 (1 hour)
-Element 5: GateNumber=6, TimerDuration=COM_SG_Timer_1800 (30 min)
+Element 0: GateNumber=1, TimerDuration=COM_StoryGate_TimerDuration_01_Standard
+Element 1: GateNumber=2, TimerDuration=COM_StoryGate_TimerDuration_02_Standard
+Element 2: GateNumber=3, TimerDuration=COM_StoryGate_TimerDuration_03_Standard
+...
 ```
 
-**Note:** Create GlobalVariables for each unique timer duration, or reuse existing ones like `COM_StoryGateTimerDuration_1800`.
+**Note:** The source struct comment says to filter for `COM_StoryGate_TimerDuration` — vanilla ships `COM_StoryGate_TimerDuration_01` through `_08_Standard`. Reuse those (as the Cass quest does) or create your own GlobalVariables with custom durations in seconds.
 
 ### Story Gate Flow
 
@@ -585,8 +685,16 @@ Element 5: GateNumber=6, TimerDuration=COM_SG_Timer_1800 (30 min)
 ```papyrus
 Function StoryGateSceneCompleted(bool IncrementAV = true)
     float currentAV = CompanionRef.GetValue(COM_StoryGatesCompleted)
-    float newAV = IncrementAV ? currentAV + 1 : currentAV
+    float newAV = currentAV
+    if IncrementAV
+        newAV = currentAV + 1
+    endif
     CompanionRef.SetValue(COM_StoryGatesCompleted, newAV)
+
+    ; NG+ carry-over: the max gate reached is written to the PLAYER as
+    ; COM_StarbornSaveActorValue_MaxStoryGate (Math.Max with current value) —
+    ; this is exactly why that AV must be in the StarbornSaveActorValues formlist
+    ; (see Section 6, StoryGates group)
 
     int nextGateNumber = (newAV + 1) as int
     StartStoryGateTimer(nextGateNumber)
@@ -746,20 +854,25 @@ bool romantic = (CompanionREF as CompanionActorScript).IsRomantic()
 ```
 1. YOUR SCRIPT calls SQ_Companions.SetRoleActive(CompanionREF)
    │
-   ├─► 2. _UpdateAlias() - Adds to Alias_Active
+   ├─► 2. SetRoleAvailable() called AUTOMATICALLY (AlsoSetAvailable defaults true)
+   │      └─► PotentialCrewFaction, SQ_Crew.SetRoleAvailable(), achievement check
    │
-   ├─► 3. _UpdateActorValue() - Sets AV_Active = 1
+   ├─► 3. _UpdateAlias() - Adds to Alias_Active
+   │
+   ├─► 4. _UpdateActorValue() - Sets AV_Active = 1
    │      └─► SQ_PreventRecalc.AddRef() to protect stats
    │
-   ├─► 4. _CustomSetRoleActive()
-   │      ├─► SetRoleInactive(PriorCompanion)
-   │      ├─► SQ_Crew.SetEliteCrewInactive()
+   ├─► 5. _CustomSetRoleActive()
+   │      ├─► SetRoleInactive(PriorCompanion) (if different)
+   │      ├─► SQ_Crew.SetEliteCrewInactive(..., sayUnassignedLine = true)
    │      ├─► SQ_Followers.SetRoleActive() ─► CommandFollow()
    │      ├─► SQ_Crew.SetRoleAvailable()
-   │      └─► _SendActiveCompanionChanged()
+   │      └─► _SendActiveCompanionChanged() (only if companion changed)
    │
-   └─► 5. YOUR SCRIPT calls CompanionREF.EvaluatePackage()
+   └─► 6. SetRoleActive() itself calls CompanionREF.EvaluatePackage() LAST
 ```
+
+**Note:** the separate `SetRoleAvailable()` and `EvaluatePackage()` calls seen in vanilla stage fragments (and this doc's snippets above) are **harmless but redundant** — `SetRoleActive()` already does both. Follow the vanilla pattern for consistency, but know it's belt-and-suspenders.
 
 ---
 
@@ -798,7 +911,7 @@ EndStruct
 |-------|-----------|---------|
 | 0 | `COM_AngerReason_Common_0_NotAngry` | Default/reset state |
 | 1 | `COM_AngerReason_Common_1_Murder` | Player killed civilian |
-| 2 | `COM_AngerReason_Common_2_Jealousy` | Romance betrayal (Andreja-specific) |
+| 2 | `COM_AngerReason_Common_2_Jealousy` | Romance betrayal (Andreja-specific; CK data — not named in script source) |
 | 3 | `COM_AngerReason_Common_3_BreakCommitment` | Player broke commitment |
 
 #### Key Properties
@@ -818,6 +931,8 @@ Event OnAffinityEvent(AffinityEvent akEvent, ActorValue akAV,
     ; 3. Passes to SQ_Traits.HandleAffinityEvent() for processing
 EndEvent
 ```
+
+> This is the **receiving** end. For where these events come from and why they sometimes don't fire (global cooldown, drop rules, line-of-sight), see **Section 7: Affinity Event Sending Pipeline**.
 
 #### Common AffinityEvents for AngerEventData
 
@@ -874,9 +989,9 @@ EndEvent
 > All actors with this script MUST have their own 'personal crime faction' that has a shared crime faction list of factions they consider 'civilians'
 
 **Flow:**
-1. Registers for player assault/murder events
+1. Registers for player assault/murder events AND `OnCombatStateChanged` (sweeps all combatants, not just direct assaults)
 2. Checks if victim is in companion's "shared crime faction list"
-3. If yes → `CivilianCombat()` or `CivilianKilled()` → Sends affinity event → May auto-dismiss
+3. If yes → `CivilianCombat()` or `CivilianKilled()` → Sends affinity event → anger state set; dismissal (if any) comes from the **anger system**, not a direct `AutoDismiss()` call
 
 #### Key Functions
 
@@ -912,10 +1027,12 @@ EndEvent
 #### Mechanic
 
 ```
-1. On location change, checks if cooldown passed
-2. If conditions met, sets HasItems = 1
-3. Says reminder line via SayCustom()
-4. GiveItems() adds from leveled list to player
+1. First OnLocationChange only STARTS a game-time cooldown timer
+   (DaysAsHours(CooldownDays)) - no gift check yet
+2. After the timer fires, location changes check the cooldown
+3. If conditions met, sets HasItems = 1
+4. Says reminder line via SayCustom()
+5. GiveItems() adds from leveled list to player
 ```
 
 **Implementation:** Create a `LeveledItem` list with character-appropriate gifts (ammo, alcohol, ship parts, credits, etc.).
@@ -940,11 +1057,13 @@ EndEvent
 | `DebugSetStoryGateTimerComplete()` | Skip story gate timer |
 | `DebugSetAngerLevel(GlobalVariable, GlobalVariable)` | Force anger state |
 | `DebugExpireAngerCoolDownTimer()` | Clear anger cooldown |
-| `DebugAwardSecondChance()` | Give second chance after breakup |
+| `DebugAwardSecondChance()` | Give an anger-system second chance |
 | `DebugMakeRomantic()` | Force romance state |
-| `DebugMakeCommitted()` | Force commitment state |
-| `DebugStartPersonalQuest()` | Start personal quest |
-| `DebugFinishPersonalQuest()` | Complete personal quest |
+| `DebugTestConditionForm()` | Evaluate a ConditionForm on the actor |
+| `DebugIsPlayerLoitering()` | Check loiter detection |
+| `DebugSetOnPlayerShip()` | Force on-ship state |
+| `DebugExpireFlirtCooldown()` | Clear flirt cooldown |
+| `DebugExpireTravelAffinityCoolDown()` | Clear travel-affinity cooldown |
 
 **Usage:** Attach to actor for testing. Optional for release builds.
 
