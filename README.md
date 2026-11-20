@@ -57,7 +57,6 @@ Bethesda built a deep, flexible companion system for Starfield — per-companion
 
 ## Credits
 
-- **Craftian** - Original Cass character concept
 - **Demetri (DJLegnds)** - Creation Kit implementation & testing
 - **Claude** - Documentation & dialogue writing
 - **Aflin** - Original NPC Template format & Starfield Template co-author
