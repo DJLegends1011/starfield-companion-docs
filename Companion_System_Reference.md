@@ -4,14 +4,20 @@
 
 This document reverse-engineers the vanilla companion system using Andreja as an implementation example. The systems, functions, and structures described apply universally to ALL companions.
 
+> **Read the official docs first.** Bethesda's [Starfield Creation Kit wiki](https://starfield.creationkit.bethesda.net/Main_Page) now covers generic follower setup: [Creating Crew and Companions](https://starfield.creationkit.bethesda.net/Creating_Crew_and_Companions), [Companions and Crew](https://starfield.creationkit.bethesda.net/Companions_and_Crew), [Affinity and Affinity Events](https://starfield.creationkit.bethesda.net/Affinity_and_Affinity_Events), [Comment Triggers](https://starfield.creationkit.bethesda.net/Comment_Triggers) and [Setting Up Companion Interjections](https://starfield.creationkit.bethesda.net/Setting_Up_Companion_Interjections). That wiki is written crew-first and does not document the companion scripts (`SQ_CompanionsScript`, `COM_CompanionQuestScript`, anger, romance, story gates). **This reference covers that companion layer.** Where the wiki already explains something, we link to it instead of repeating it.
+
+*v1.3 (2026-11-19): cross-checked against the official CK wiki and records in `Starfield.esm` + official DLC plugins. Fixes: crime-faction "ignore crimes" advice (the script never reads those flags), auto-dismiss rules (a per-anger-level flag, values now listed), `AddAffinity()` takes positive values only, nonexistent condition forms replaced with the real shared set, alias flags, vanilla story gate count. New: Compatibility section (Add to Event / Add to List, companion ID uniqueness), passive travel affinity, affinity event gating (required faction, actor list, cooldown values), comment-trigger internals, native Papyrus affinity API, `OnCompanionDismiss`.*
+
 *v1.2 (2026-07-01): full verification pass against the vanilla Papyrus sources. All function signatures, property names, and call chains now match source. New in this version: the affinity event sending pipeline (Section 7), dismissal side effects (Section 3), the ActiveCompanionChanged CustomEvent (Section 3), and the built-in Andreja jealousy hook (Section 9).*
 
 **Key Sections:**
+
 - **[Script Architecture](#1-script-architecture)** - How components connect
 - **[Core Systems](#2-sq_actorrolesscript---foundation)** - Quest and actor scripts
 - **[Actor Scripts](#15-actor-attached-scripts)** - Scripts attached to Actor form
 - **[API Quick Reference](#14-api-quick-reference)** - Common function calls
 - **[Condition Forms](#12-condition-forms)** - Reusable dialogue conditions
+- **[Compatibility](#16-compatibility-coexisting-with-other-companion-mods)** - Add to Event / Add to List, companion IDs
 
 ---
 
@@ -32,6 +38,7 @@ This document reverse-engineers the vanilla companion system using Andreja as an
 13. [VoiceType System](#13-voicetype-system)
 14. [API Quick Reference](#14-api-quick-reference)
 15. [Actor-Attached Scripts](#15-actor-attached-scripts)
+16. [Compatibility: Coexisting With Other Companion Mods](#16-compatibility-coexisting-with-other-companion-mods)
 
 ---
 
@@ -76,13 +83,19 @@ Actor (Engine)
 ### Source File Locations
 
 ```
-D:\SteamLibrary\steamapps\common\Starfield\Data\Scripts\Source\
+<Starfield install>\Data\Scripts\Source\
 ├── SQ_ActorRolesScript.psc
 ├── SQ_CompanionsScript.psc
+├── SQ_Companions_ActiveCompanionScript.psc   (alias script: travel affinity, Leadership recovery)
 ├── SQ_FollowersScript.psc
 ├── SQ_CrewScript.psc
 ├── CompanionActorScript.psc
-└── COM_CompanionQuestScript.psc
+├── CompanionAffinityScript.psc
+├── CompanionAffinityEventsScript.psc         (sends the COM_Event_Action_* events, except the Civilian ones)
+├── CompanionCrimeResponseScript.psc
+├── COM_CompanionQuestScript.psc
+├── COM_CommentTriggerScript.psc
+└── COM_CREW_GiveItemActorScript.psc
 ```
 
 ---
@@ -219,6 +232,7 @@ EndFunction
 ### Dismissal Side Effects (_CustomSetRoleInactive)
 
 Dismissing is not just "stop following." `_CustomSetRoleInactive` also:
+
 - Calls `SQ_Followers.SetRoleInactive()`
 - Fires `_SendActiveCompanionChanged(None, DismissedActor)`
 - Stops the companion's combat
@@ -229,6 +243,8 @@ Dismissing is not just "stop following." `_CustomSetRoleInactive` also:
 ### ActiveCompanionChanged CustomEvent
 
 `SQ_CompanionsScript` fires a `ActiveCompanionChanged` CustomEvent whenever the active companion changes, with args struct `{NewActiveCompanion, OldActiveCompanion}` (helper: `GetActiveCompanionChangedArgsStruct()`). External scripts can `RegisterForCustomEvent(SQ_Companions, "ActiveCompanionChanged")` — the clean hook for reacting to companion swaps (including cross-mod companion detection).
+
+**Native engine events** (from the official Papyrus docs) complement it: [`Actor.OnCompanionDismiss()`](https://starfield.creationkit.bethesda.net/OnCompanionDismiss_-_Actor) is sent to the companion being dismissed, [`Actor.OnPlayerFollowerWarp()`](https://starfield.creationkit.bethesda.net/OnPlayerFollowerWarp_-_Actor) fires when a follower is warped to the player, and [`Game.GetPlayerFollowers()`](https://starfield.creationkit.bethesda.net/GetPlayerFollowers_-_Game) returns every actor currently running a follow-player procedure. Use `ActiveCompanionChanged` for companion-system logic; use these for engine-level follower state.
 
 ### Companion Check Functions
 
@@ -283,6 +299,8 @@ Function _CustomSetRoleActive(Actor ActorToUpdate, Actor PriorActiveActor)
 EndFunction
 ```
 
+Engine side (official docs): [`SetPlayerTeammate(abTeammate, abCanDoFavor, abGivePlayerXP)`](https://starfield.creationkit.bethesda.net/SetPlayerTeammate_-_Actor) (SQ_Followers passes `abCanDoFavor = false`), the [Follow procedure](https://starfield.creationkit.bethesda.net/Follow_%28Procedure%29), and [Packages](https://starfield.creationkit.bethesda.net/Packages).
+
 ---
 
 ## 5. COMPANIONACTORSCRIPT - ACTOR ATTACHMENT
@@ -306,6 +324,8 @@ Group Properties
     Activator Property COM_PQ_TxtReplace_QuestName Mandatory Const Auto
 EndGroup
 ```
+
+> **`COM_CompanionID` must hold a value no other companion uses.** It isn't just a label. `COM_CommentTriggerScript` remembers which companions already commented on a trigger by `GetCompanionIDValueInt()`. The main quest also stores the rescued companion as an ID number (`MQ_CompanionSaved.SetValueInt(COM_CompanionID_Andreja.GetValueInt())` etc. in the MQ204 stage fragments). Vanilla values: Sarah **1**, Sam **2**, Barrett **3**, Matteo **4**, Andreja **6**, Matisse **8**. A custom companion that reuses one of these shares that companion's comment-trigger history and becomes indistinguishable from it anywhere an ID is compared. Pick a high, unusual number (see [Section 16](#16-compatibility-coexisting-with-other-companion-mods)).
 
 ### Key Functions
 
@@ -456,7 +476,31 @@ EndEvent
 | DISLIKES | `COM_EventReaction_Dislikes` | -15 |
 | HATES | `COM_EventReaction_Hates` | -35 |
 
-*(Point values are GlobalVariable data, confirmed against the CK data dump rather than script source.)*
+*(Point values are GlobalVariable data in `Starfield.esm`, not script source. The official [Affinity page](https://starfield.creationkit.bethesda.net/Affinity_and_Affinity_Events) lists Hate as −30 in one place and −35 in another; the game data is **−35**.)*
+
+The Affinity Event **form** itself (ID, Allow Repeated, Template, Event Size, Distance to Player, Cooldown, Required Faction, Actor List / Reaction Value) is documented on that official page; read it there.
+
+### Passive Travel Affinity
+
+The active companion also gains affinity just by traveling with the player. `SQ_Companions_ActiveCompanionScript` (on the `ActiveCompanion` alias) runs `AwardAffinityTravelBonus()` on every location change while its cooldown is clear:
+
+| Global | Value | Meaning |
+|---|---|---|
+| `COM_AffinityTravelBonus_PreMQ` | 5 | Points per award before `MQ302B` is completed |
+| `COM_AffinityTravelBonus_PostMQ` | 15 | Points per award after `MQ302B.IsCompleted()` |
+| `COM_AffinityTravelCoolDown` | 1800 | Seconds (real-time `StartTimer`) between awards |
+
+It calls `CompanionActorScript.AddAffinity()`, so it also re-checks wants-to-talk. The official wiki describes the same rule. `CompanionDebugScript.DebugExpireTravelAffinityCoolDown()` clears the timer for testing.
+
+### Native Papyrus Affinity API
+
+| Call | Notes |
+|---|---|
+| [`AffinityEvent.Send(akTarget = None)`](https://starfield.creationkit.bethesda.net/Send_-_AffinityEvent) | Fires the event. `akTarget` is the reference the line is said to (used by conditions). |
+| [`AffinityEvent.Reset()`](https://starfield.creationkit.bethesda.net/Reset_-_AffinityEvent) | Clears the event's do-once flag and cooldown. |
+| [`Actor.OnAffinityEvent(...)`](https://starfield.creationkit.bethesda.net/OnAffinityEvent_-_Actor) | Received by each reacting actor; `CompanionAffinityScript` uses it (Section 15). |
+| [`RegisterForAffinityEvent(event)`](https://starfield.creationkit.bethesda.net/RegisterForAffinityEvent_-_ScriptObject) → [`OnAffinityEventSent(event, target)`](https://starfield.creationkit.bethesda.net/OnAffinityEventSent_-_ScriptObject) | Lets **any** script listen for an event being fired, e.g. to start a scene of your own when a vanilla event fires. Only the registering script receives it. |
+| [`Actor.AddPassiveAffinity(float)`](https://starfield.creationkit.bethesda.net/AddPassiveAffinity_-_Actor) | Adds affinity, modified by perks. **Amount must be greater than 0.** |
 
 ### Affinity Event Sending Pipeline (CompanionAffinityEventsScript)
 
@@ -471,14 +515,22 @@ CompanionAffinityEventsScript (sender quest — watches player actions)
                 └─► SQ_Companions.SQ_Traits.HandleAffinityEvent()  (points applied)
 ```
 
+**Who receives an event (form data, not script):**
+
+- **Actor List.** Only actors listed on the event form (or added to it through an *Add to Event* form, see [Section 16](#16-compatibility-coexisting-with-other-companion-mods)) react. Each entry pairs an actor with a Reaction Value global.
+- **Required Faction.** Vanilla action events require `CurrentFollowerFaction` (so active Elite Crew react too); comment-trigger events require `AvailableCompanionFaction`.
+- **Distance.** `COM_EventParam_Distance_Action` / `_CommentTrigger` = 30.
+
 **Send-gating rules (why lines don't always play):**
-- **One global cooldown for ALL action events:** `COM_ActionEventScriptFilter_CoolDownMinutes` (minutes × 60). After any action event fires, all others are suppressed until it expires. A FormList (`COM_IgnoreAffinityEventCooldownOnChangeLocation_Locations`) lets specific locations bypass it for Arrival.
+
+- **One global cooldown for ALL action events:** `COM_ActionEventScriptFilter_CoolDownMinutes` = **2** (minutes × 60). After any action event fires, all others are suppressed until it expires. A FormList (`COM_IgnoreAffinityEventCooldownOnChangeLocation_Locations`) lets specific locations bypass it for Arrival.
+- **Per-event cooldown on top of that:** each form's own cooldown global, e.g. `COM_EventParam_CoolDown_Action` = 5, `COM_EventParam_CoolDown_Arrival` = 0. Every functional `COM_Event_Action_*` form has **Allow Repeated** set, so none of them are once-per-playthrough. These cooldowns are the only throttle.
 - **Events are dropped, not queued,** when the script is cooling down, the player is in dialogue, the companion is in a scene, or player/companion is within 20m of a configured "important scene" (`ImportantSceneData`).
 - **Steal/Pickpocket require line-of-sight:** `CompanionRef.HasDetectionLOS(PlayerRef)` — the companion must see the theft.
 - **Gravity thresholds:** high > 1.5g, low < 0.5g, polled after location changes. ⚠ The ZeroG branch is **unreachable** (`< 0.5` matches GravityLow before `<= 0` is tested) — quests must `Send()` `COM_Event_Action_ZeroG` directly.
 - ⚠ **`COM_Event_Action_UseWorkbench` is dead:** its handler is commented out in vanilla ("no companion lines were written for this", bug GEN-432521).
 
-**Modding implication:** to fire a vanilla action event from your own quest, just call `TheEvent.Send()`. To add reactions to existing events, no script is needed — reactions are data on the AffinityEvent form.
+**Modding implication:** to fire a vanilla action event from your own quest, just call `TheEvent.Send()`. To add reactions to existing events, no script is needed: reactions are data. **Don't edit the vanilla event form.** Create your own event that uses *Add to Event* ([Section 16](#16-compatibility-coexisting-with-other-companion-mods)).
 
 ### Level Progression Functions
 
@@ -507,8 +559,23 @@ EndFunction
 |-------|-----------------|--------|
 | 0 | `COM_AngerLevel_0_NotAngry` | Normal |
 | 1 | `COM_AngerLevel_1_Annoyed` | Dialogue changes |
-| 2 | `COM_AngerLevel_2_Angry` | May leave, confrontation possible |
-| 3 | `COM_AngerLevel_3_Furious` | Will leave, relationship damaged |
+| 2 | `COM_AngerLevel_2_Angry` | Auto-dismisses; confrontation (anger scene) available |
+| 3 | `COM_AngerLevel_3_Furious` | Auto-dismisses; no cooldown timer |
+
+### What Each Anger Level Does (vanilla `SQ_Companions.AngerLevelData`)
+
+`SQ_CompanionsScript` has one `AngerLevelDatum` per level: `{AngerLevel, MessageToDisplay, CoolDownTimerDuration (game hours, -1 = none), AutoDismiss}`. `SetAngerLevel()` shows the message, and if `AutoDismiss` is true it calls `SetRoleInactive()` **unless the companion is locked in**. The vanilla values read from `Starfield.esm`:
+
+| Level | AutoDismiss | Cooldown (game hours) | Message |
+|---|---|---|---|
+| 0 Not Angry | false | none | `SQ_Companions_AngerLevel_0_NotAngry_Message` |
+| 1 Annoyed | false | **6** | none |
+| 2 Angry | **true** | **24** | `SQ_Companions_AngerLevel_2_Angry_Message` |
+| 3 Furious | **true** | none (-1) | `SQ_Companions_AngerLevel_3_Furious_Message` |
+
+An auto-dismissing level also arms the confrontation: it sets `COM_AngerSceneCompleted = 0`, except when the reason is `COM_AngerReason_Common_3_BreakCommitment` (vanilla has no anger scene for a breakup).
+
+So "auto-dismiss" is a property of the **level**, not of the event. If you choose `Annoyed` in your `AngerEventData`, the companion stays; `Angry` or `Furious` sends them away. Furious has no cooldown, so it only ends through script/scene logic (anger scene, second chance). Separately, `CompanionCrimeResponseScript.CivilianCombat()` calls its own `AutoDismiss()` immediately on civilian combat (Section 15).
 
 ### Anger Functions
 
@@ -555,6 +622,7 @@ EndFunction
 The `PrioritizedAngerReasons` property controls which anger reasons cannot be overridden by newer, less serious offenses.
 
 **How It Works:**
+
 - Array of GlobalVariables (filter: `COM_AngerReason_*`)
 - Lower array index = higher priority
 - If companion is already angry for a reason in this list, new anger reasons with higher index are ignored
@@ -646,7 +714,7 @@ EndStruct
 In your `COM_Companion_YourName` quest's script properties:
 
 1. Find the `StoryGateData` property (array of StoryGateDatum)
-2. Set array size (e.g., 6 for 6 story gates)
+2. Set array size: one element per gate. Vanilla companions use **8** (`COM_CND_DIAL_Greeting_StoryGate_01`–`08` and `COM_CND_StoryGate_01`–`08_RequirementsAchieved` exist for all eight).
 3. For each element:
    - `GateNumber` = 1, 2, 3, etc.
    - `TimerDuration` = GlobalVariable with duration in seconds
@@ -659,7 +727,7 @@ Element 2: GateNumber=3, TimerDuration=COM_StoryGate_TimerDuration_03_Standard
 ...
 ```
 
-**Note:** The source struct comment says to filter for `COM_StoryGate_TimerDuration` — vanilla ships `COM_StoryGate_TimerDuration_01` through `_08_Standard`. Reuse those (as the Cass quest does) or create your own GlobalVariables with custom durations in seconds.
+**Note:** The source struct comment says to filter for `COM_StoryGate_TimerDuration` — vanilla ships `COM_StoryGate_TimerDuration_01` through `_08_Standard` (gate 1 = **1800 s**, gates 2–8 = **3600 s**; counted only while the companion is active). Reuse those or create your own GlobalVariables with custom durations in seconds.
 
 ### Story Gate Flow
 
@@ -731,8 +799,10 @@ Fill Type: ● External Alias Ref
            ☑ (Linked)
            Quest: SQ_Companions
            Alias: ActiveCompanion
-Flags: ☑ Optional
+Flags: ☑ Optional  ☑ Optional All Scenes  ☑ Is Companion
 ```
+
+The flags match the official [Setting Up Companion Interjections](https://starfield.creationkit.bethesda.net/Setting_Up_Companion_Interjections) page, which uses this alias (named `CompanionAlias`) to add companion lines to other quests' scenes. The Optional flags let the scene run when no companion is present.
 
 ### SQ_Companions Master Aliases
 
@@ -753,18 +823,27 @@ Flags: ☑ Optional
 
 Starfield introduced **Condition Forms** - reusable condition packages.
 
-### Common Condition Forms
+### Shared Companion Condition Forms
 
-| ConditionForm | Purpose |
-|---------------|---------|
-| `COM_CND_DIAL_Hello_Angry` | Angry hello check |
-| `COM_CND_DIAL_Hello_Friendship` | Friendship hello check |
-| `COM_CND_DIAL_Hello_Affection` | Affection hello check |
-| `COM_CND_DIAL_Hello_Committed` | Committed hello check |
-| `COM_CND_DIAL_Goodbye_*` | Goodbye variants |
-| `COM_CND_DIAL_Dismiss_Positive` | Positive dismissal |
-| `COM_CND_DIAL_Dismiss_Negative` | Negative dismissal |
-| `COM_CND_DIAL_WaitingForInput_*` | WFI variants |
+These are **shared by every companion**. Reuse them; don't make per-companion copies. All names verified in `Starfield.esm`. (The official [Creating Crew and Companions](https://starfield.creationkit.bethesda.net/Creating_Crew_and_Companions) page lists the `CREW_CND_DIAL_*` equivalents for Elite Crew.)
+
+| Use | ConditionForms |
+|---|---|
+| Hello (Misc tab) | `COM_CND_DIAL_Hello_Neutral`, `_Friendship`, `_Affection`, `_Committed`, `_Angry` |
+| Goodbye | `COM_CND_DIAL_Goodbye_Neutral`, `_Friendship`, `_Affection`, `_Committed`, `_Angry` |
+| Waiting for input | `COM_CND_DIAL_WaitingForInput_Positive`, `_Neutral`, `_Negative` |
+| Top-level system scenes | `COM_CND_DIAL_TopLevel_Pickup`, `_DismissScene`, `_Follow`, `_Wait`, `_Wait_Disallowed`, `_GiveItem` |
+| Top-level relationship scenes | `COM_CND_DIAL_TopLevel_Friendship`, `_Flirt`, `_Romance`, `_Commitment_Breakup` |
+| Pickup/dismiss response tone | `COM_CND_DIAL_PickupDismiss_Positive`, `_Negative`, `_Angry`, `_Committed` |
+| Follow/wait response tone | `COM_CND_DIAL_FollowWait_Positive`, `_Negative` |
+| Locked-in refusals | `COM_CND_DIAL_PickupRefusal_LockedIn`, `COM_CND_DIAL_DismissRefusal_LockedIn` |
+| Greeting scenes | `COM_CND_DIAL_Greeting_StoryGate_01`–`08`, `_AngerScene`, `_GiveItem`, `_StoryGate_WantsToTalk_Allowed`, `_WantsToTalk_NewGamePlus` |
+| Story gate requirements | `COM_CND_StoryGate_01`–`08_RequirementsAchieved` |
+| Romance | `COM_CND_DIAL_Romance_AcknowledgeFlirting` |
+| Anger scene | `COM_CND_DIAL_AngerScene_SecondChancesAvailable` |
+| Wants to talk | `COM_CND_WantsToTalk_Standard` (the `WantsToTalkConditionForm` property) |
+
+Some vanilla forms are per-companion: `COM_CND_DIAL_TopLevel_Flirt_Stack1`–`3_<Name>`, `COM_CND_DIAL_TopLevel_Wait_Disallowed_<Quest>`, `COM_CND_DIAL_Greeting_WantsToTalkQuest_<Quest>` (quest-reaction talks such as MQ104A, CrimsonFleet, RyujinFaction). Make your own versions of those only if your companion needs them.
 
 ### Usage in Conditions
 
@@ -787,6 +866,8 @@ FormList containing all companion VoiceTypes:
 | `NPCMBarrett` | VoiceType |
 | `NPCMSamCoe` | VoiceType |
 | `NPCFSarahMorgan` | VoiceType |
+
+Add your companion's voice type to this list with an *Add to List* FormList rather than by editing it ([Section 16](#16-compatibility-coexisting-with-other-companion-mods)). Naming follows the vanilla convention from the official docs: `NPCF<Name>` / `NPCM<Name>` / `NPCX<Name>`.
 
 ### VoiceType Conditions
 
@@ -846,7 +927,13 @@ bool romantic = (CompanionREF as CompanionActorScript).IsRomantic()
 ### Add Affinity
 
 ```papyrus
-(CompanionREF as CompanionActorScript).AddAffinity(25)
+(CompanionREF as CompanionActorScript).AddAffinity(25)   ; positive values only
+```
+
+`AddAffinity()` wraps the native `AddPassiveAffinity()`, which requires an amount **greater than 0** and is modified by perks. To **lower** affinity, fire one of the companion's Direct events instead (`COM_Event_Direct_<Name>_Dislikes` / `_Hates`), or any affinity event where the companion's reaction is Dislikes/Hates:
+
+```papyrus
+MyCompanion_DislikesEvent.Send()   ; reaction value on the form decides the points
 ```
 
 ### Full SetRoleActive Call Chain
@@ -937,11 +1024,13 @@ EndEvent
 #### Common AffinityEvents for AngerEventData
 
 **`COM_Event_Action_CivilianCombat_Common`**
+
 - Description: Player in combat with civilian/innocent
 - Triggers auto-dismissal
 - Vanilla companions: All DISLIKE (except Sophia Grace = Indifferent)
 
 **`COM_Event_Action_CivilianKilled_Common`**
+
 - Description: Player killed a civilian/innocent
 - Triggers auto-dismissal and anger state
 - Vanilla companions: All HATE
@@ -960,7 +1049,7 @@ EndEvent
 
 - **Morally grey companions** can use lower anger levels (e.g., `Annoyed` instead of `Angry`) for civilian events
 - **Jealousy system** is optional - only implement if fits character (requires companion-specific AffinityEvent like `COM_Event_PlayerBecomesRomantic_YourNameJealous`)
-- Anger levels affect dialogue and whether companion leaves - Level 2+ may trigger auto-dismissal
+- Anger levels affect dialogue and whether the companion leaves. In vanilla, Angry (2) and Furious (3) auto-dismiss and Annoyed (1) doesn't (Section 8)
 
 ---
 
@@ -989,9 +1078,11 @@ EndEvent
 > All actors with this script MUST have their own 'personal crime faction' that has a shared crime faction list of factions they consider 'civilians'
 
 **Flow:**
-1. Registers for player assault/murder events AND `OnCombatStateChanged` (sweeps all combatants, not just direct assaults)
-2. Checks if victim is in companion's "shared crime faction list"
-3. If yes → `CivilianCombat()` or `CivilianKilled()` → Sends affinity event → anger state set; dismissal (if any) comes from the **anger system**, not a direct `AutoDismiss()` call
+
+1. Registers (in `OnLoad`) for the player's `OnPlayerAssaultActor`, `OnPlayerMurderActor` AND `OnCombatStateChanged` (sweeps all combatants, not just direct assaults)
+2. `IsValidCrimeVictim()`: the companion's crime faction comes from the actor's **Assigned Crime Faction** (`GetCrimeFaction()`). The victim counts as a civilian if its crime faction is in that faction's crime group (`IsFactionInCrimeGroup`), it does **not** have the `COM_NotCivilian` keyword, and it isn't in `IgnoreSharedCrimeForAnyoneInTheseFactions`
+3. **Civilian combat** → `CivilianCombat()`: `Pacify()`, send `AffinityEventOnCombat`, then **`AutoDismiss()` directly** (unless locked in)
+4. **Civilian killed** → `CivilianKilled()`: `Pacify()`, send `AffinityEventOnKill`; dismissal here comes from the **anger system** (the kill event is in `AngerEventData` at an auto-dismissing level, Section 8)
 
 #### Key Functions
 
@@ -1002,7 +1093,19 @@ EndEvent
 | `CivilianKilled()` | Same but for kills |
 | `AutoDismiss()` | Removes companion if not locked in |
 
-**Customization:** Adjust Personal Crime Faction's "Ignore Crimes Against Non-Members" checkboxes based on companion morality.
+**Customization: what actually changes a companion's tolerance**
+
+⚠ The personal crime faction's *Ignore Crimes Against Non-Members* checkboxes do **not** affect this script. It reacts whether or not the act was a reported crime (source: *"we don't care if anyone reported the crime … this event is for an unprovoked attack which is immoral regardless of crime status"*). The actor's AI Data **Morality** setting doesn't either; the official [Actor page](https://starfield.creationkit.bethesda.net/Actor) marks it "Not used in Starfield". The real levers:
+
+| Lever | Effect |
+|---|---|
+| Crime group list (CRGR) on the personal crime faction | Who counts as a civilian. Vanilla companions use `FactionSharedCrimeList` (major-faction crime factions + every companion/elite crew personal crime faction). A smaller custom list = a more tolerant companion. |
+| `IgnoreSharedCrimeForAnyoneInTheseFactions` | Exempt specific factions even if they're in the list. |
+| `COM_NotCivilian` keyword | Put on actors who should never count as civilians. |
+| Reaction values on `..._CivilianCombat_Common` / `..._CivilianKilled_Common` | How much affinity the companion loses (or gains). |
+| `AngerEventData` level for the kill event | `Annoyed` = stays, `Angry`/`Furious` = auto-dismiss (Section 8). |
+
+Civilian **combat** dismisses through `AutoDismiss()` no matter which of these you change, as long as the victim counts as a civilian.
 
 ---
 
@@ -1069,17 +1172,63 @@ EndEvent
 
 ---
 
+### COM_CommentTriggerScript (on placed trigger volumes)
+
+The official [Comment Triggers](https://starfield.creationkit.bethesda.net/Comment_Triggers) page covers placement and dialogue setup. What the script adds:
+
+- Only actors castable to **`CompanionActorScript`** set it off (`akActionRef as CompanionActorScript`), and only while `COM_CND_Comment_CommentsAllowed` is true (prevents comment stomping when several followers are present).
+- **`OncePerCompanion` (default `true`)** is on the placed trigger, not the event form. Each trigger remembers companions by **`COM_CompanionID` value** (Section 5).
+- If the player or companion is in combat, it waits for combat to end.
+- A linked ref (e.g. an XMarkerHeading) makes the companion walk there first; the linked ref also becomes the event's target.
+- Vanilla comment-trigger event forms: Indifferent reactions, distance 30, 1-day cooldown (`COM_EventParam_CoolDownDays_CommentTrigger`), required faction `AvailableCompanionFaction`. There are 319 in `Starfield.esm`, 22 of them `_Generic_` (reusable themes such as `LocCaves`, `Loot`, `LocStarbornTemples`). To use a generic trigger you add a Custom Topic for its event to your companion quest; no placement needed. Vanilla companions are also on each generic event's Actor List. Whether your companion has to be added too (via *Add to Event*, Section 16) for its line to play is untested, so add it to be safe.
+
+---
+
+## 16. COMPATIBILITY: COEXISTING WITH OTHER COMPANION MODS
+
+Several vanilla forms need an entry from **every** companion: the affinity events your companion reacts to, `Default_CompanionVoicesList`, `FactionSharedCrimeList`, `StarbornSaveActorValues`. If two mods both override the same vanilla form, the one loaded last wins and the other companion silently loses its entries. The Creation Kit has injection fields for exactly this. Use them and **never edit the vanilla form**.
+
+### Affinity events: `PNAM – Add to Event`
+
+An Affinity Event form has an **Add to Event** field. Create your own event, put only your companion (and its reaction) in its Actor List, and point *Add to Event* at the vanilla event. Your reactions are merged into the vanilla event at runtime. This field was added in a CK update after the override conflict was reported to Bethesda by this repo's author.
+
+Bethesda's own add-ons use this pattern, and none of them override a single `Starfield.esm` affinity event:
+
+| Plugin | Delta events | Example |
+|---|---|---|
+| `ShatteredSpace.esm` | 13 | `SFBGS001_COM_Event_Action_ShipBoardingOther` → `COM_Event_Action_ShipBoardingOther` |
+| `SFBGS00D.esm` | 10 | `SFBGS038_COM_Event_Action_HealCompanion` → `COM_Event_Action_HealCompanion` |
+| `SFBGS050.esm` | 18 | `SFTER_COM_Event_Action_Arrival_Detla` → `COM_Event_Action_Arrival` |
+
+Suggested naming: `<YourPrefix>_COM_Event_Action_<Name>_Delta`. Comment-trigger and dialogue-response events you create yourself don't need this; they're already yours.
+
+### FormLists: `ANAM – Add to List`
+
+FormLists have the matching **Add to List** field, and it supports conditions. Example: `SFBGS00D.esm` `LegendaryRobotList` → *Add to List* `LegendaryActorList`, with two conditions. For a companion, make one small list per shared list (e.g. `<Prefix>_CompanionVoicesList_Add` containing only your voice type → `Default_CompanionVoicesList`).
+
+> Not every official plugin follows this yet: `SFBGS050.esm` still overrides `StarbornSaveActorValues` directly. Still untested: whether injected entries are seen by every engine-side reader (faction crime groups built from `FactionSharedCrimeList`, NG+ carry-over from `StarbornSaveActorValues`). Test those two in-game before relying on them.
+
+### Companion ID
+
+Give `COM_CompanionID` a value no other companion uses (Section 5). Vanilla takes 1, 2, 3, 4, 6, 8.
+
+### Cross-mod detection
+
+To react to another mod's companion without a hard dependency, use `ActiveCompanionChanged` (Section 3) or `Game.GetFormFromFile()` as shown on the official [Inter-mod Communication](https://starfield.creationkit.bethesda.net/Inter-mod_Communication) page.
+
+---
+
 ## USING THIS REFERENCE FOR YOUR COMPANION
 
 1. **Understand the Architecture** (Sections 1-6) - How scripts and systems connect
 2. **Reference Core Systems** (Sections 7-13) - Affinity, anger, romance, conditions
 3. **Actor Scripts** (Section 15) - Scripts attached to the Actor form
 4. **API Quick Reference** (Section 14) - Copy/paste ready function calls
-5. **Adapt to Your Needs** - Replace placeholder companion names with your character's name
+5. **Compatibility** (Section 16) - Read before you touch any vanilla form
+6. **Adapt to Your Needs** - Replace placeholder companion names with your character's name
 
-  
+For generic setup (actor form, crew skills, quest data, scenes, dialogue tabs, voice-over), follow the official [Starfield Creation Kit wiki](https://starfield.creationkit.bethesda.net/Main_Page).
+
 All examples show universal patterns. Apply these directly to your companion implementation.  
   
 ---
-
-
