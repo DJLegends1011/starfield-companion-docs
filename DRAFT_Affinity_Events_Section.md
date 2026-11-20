@@ -1,9 +1,11 @@
-# Section 6: Affinity Events — DRAFT v3
+# Section 6: Affinity Events — v4
 ## (For "Aflin & DJLegend's Starfield NPC Template" — fills the Section 6 stub in the shared Google Doc)
 
 *This section is specific to Companion/Follower NPCs. Affinity Events are Starfield's system for tracking how a companion feels about the player's actions. Where Skyrim followers mostly just exist, Starfield companions have opinions — every theft, firefight, and drink the player takes can move the relationship. If the Designer fills out this section, a Scripter should be able to implement the companion's entire reaction profile in the Creation Kit.*
 
 *Everything in this section has been verified against the vanilla Papyrus sources (primarily `CompanionAffinityEventsScript.psc`) and a full data dump of vanilla affinity event forms. Where vanilla has bugs or dead events, they are flagged — don't write lines the game will never play.*
+
+*v4 (2026-11-19): this section is merged into Aflin & DJLegend's Starfield NPC Template; this file is the maintained copy. It was cross-checked against the official [Starfield CK wiki](https://starfield.creationkit.bethesda.net/Main_Page) and the records in `Starfield.esm`. For how the Affinity Event **form** works in the editor, read the official [Affinity and Affinity Events](https://starfield.creationkit.bethesda.net/Affinity_and_Affinity_Events) page. This section is the designer's side: which events exist, when they really fire, and what to write. Script-level detail is in [`Companion_System_Reference.md`](Companion_System_Reference.md).*
 
 ---
 
@@ -19,23 +21,27 @@ When the player performs certain actions, visits locations, or makes dialogue ch
 | **DISLIKES** | -15 | Actions that annoy or conflict with the NPC's values |
 | **HATES** | -35 | Actions that violate the NPC's hard limits |
 
+*(The official wiki's affinity page lists Hate as −30 in one spot; the game data says −35.)*
+
+The companion also gains affinity passively while traveling with the player: **+5** per location change, at most once every 30 real-time minutes (**+15** after the main quest's MQ302B). Long-term companions therefore drift upward even without big reactions, so a few dislikes won't sink the relationship.
+
 **INDIFFERENT is not "no reaction."** Most vanilla reactions are Indifferent — the companion still comments, the relationship just doesn't move. Flavor commentary lives here.
 
 **Design tip:** Most events should land in LIKES/INDIFFERENT/DISLIKES. LOVES and HATES are powerful — save them for things that truly define your character. In vanilla, HATES is almost never used.
 
 ### Affinity Levels
 
-As points accumulate, the companion progresses: **Neutral → Friendship → Affection → Commitment** (romance possible at the top, if applicable). Negative events can also feed an **Anger System** (Not Angry → Annoyed → Angry → Furious). Anger Level 2+ makes the companion confront the player and can end with them leaving — decide early which events are your companion's anger triggers.
+As points accumulate, the companion progresses: **Neutral → Friendship → Affection → Commitment** (romance possible at the top, if applicable). Negative events can also feed an **Anger System** (Not Angry → Annoyed → Angry → Furious). Each anger trigger picks a level, and the level decides what happens. **Annoyed:** the companion stays and only their dialogue changes; it cools down after 6 in-game hours. **Angry:** the companion leaves the player on the spot and a confrontation scene unlocks; it cools down after 24 hours. **Furious:** they leave, and there's no cooldown, so only a scene can resolve it. Decide early which events are your companion's anger triggers and how hard each one hits. A morally grey companion can use *Annoyed* for things that would send Sarah home.
 
 ### Types of Affinity Events
 
 | Type | Prefix | Count in Vanilla | Purpose |
 |------|--------|-----------------|---------|
 | **Action Events** | `COM_Event_Action_*` | ~40 functional | React to player actions (steal, craft, combat, etc.) |
-| **Comment Triggers** | `COM_Event_CommentTrigger_*` | ~319 | React to entering locations (cities, dungeons, landmarks) |
-| **Dialogue Responses** | *(varies, often quest prefix)* | — | React to specific player dialogue choices |
-| **WantsToTalk** | `COM_WantsToTalkEvent_*` | 12 | Story gate conversations the companion initiates |
-| **Direct Events** | `COM_Event_Direct_*` | 4 per companion | Scripts manually award affinity (Likes/Dislikes/Loves/Hates) |
+| **Comment Triggers** | `COM_Event_CommentTrigger_*` | 319 (22 generic) | React to entering locations (cities, dungeons, landmarks) |
+| **Dialogue Responses** | *(varies, often quest prefix; template `COM_Event_DialogueResponse_AAA`)* | — | React to specific player dialogue choices |
+| **WantsToTalk** | `COM_WantsToTalkEvent_*` | 10 live (+1 deprecated, +template) | After a major quest ends, the companion wants to talk about it |
+| **Direct Events** | `COM_Event_Direct_<Name>_*` | 4 per companion | Scripts manually award affinity (Likes/Dislikes/Loves/Hates) |
 
 Action Events are the bread and butter — this section covers them event-by-event. The other types get shorter treatment at the end.
 
@@ -45,11 +51,11 @@ Action Events are the bread and butter — this section covers them event-by-eve
 
 All Action Events are sent by one vanilla quest script (`CompanionAffinityEventsScript`). Knowing its rules saves you from writing lines that rarely or never play:
 
-1. **One shared cooldown throttles ALL action events.** After any action event fires, every other action event is suppressed for a global cooldown (`COM_ActionEventScriptFilter_CoolDownMinutes`). The player can steal five things in a row and get one line. Write lines knowing most triggers are silently eaten — variety matters more than volume for spammy actions.
+1. **One shared cooldown throttles ALL action events.** After any action event fires, every other action event is suppressed for **2 minutes** (`COM_ActionEventScriptFilter_CoolDownMinutes`). On top of that each event has its own cooldown (most action events use `COM_EventParam_CoolDown_Action` = 5; Arrival has none). The player can steal five things in a row and get one line. Write lines knowing most triggers are silently eaten — variety matters more than volume for spammy actions.
 2. **Events are dropped, not queued**, if the player is in dialogue, the companion is in a scene, or either is near an "important scene." No line plays and no points move.
-3. **Events reach the active companion AND active Elite Crew.** You can give reactions to a crew-only NPC, not just full companions.
-4. **Each event has an "Allow Repeated" flag** in the CK — some (Arrival) repeat forever, others fire once per playthrough.
-5. **Reactions and lines are data, not script.** The designer picks a reaction tier per event and writes lines; the scripter sets them on the AffinityEvent form. No Papyrus needed for standard events.
+3. **Events reach whoever is on the event's Actor List and in its Required Faction.** Action events require `CurrentFollowerFaction`, so the active companion **and** active Elite Crew both react. Your NPC only reacts to events it has been added to. A crew-only NPC can have reactions too, not just full companions.
+4. **Every action event is repeatable.** All functional `COM_Event_Action_*` forms have *Allow Repeated* set; nothing here is once per playthrough. The cooldowns above are the only limit, so a frequent event will be heard many times over a playthrough. Budget lines accordingly.
+5. **Reactions and lines are data, not script.** The designer picks a reaction tier per event and writes lines; the scripter adds them in the CK. No Papyrus is needed for standard events. ⚠ **Scripter: don't edit the vanilla event form.** If two companion mods both edit it, only the last one loaded keeps its reactions. Make your own event with *Add to Event* pointing at the vanilla one. That's how Bethesda's own add-ons do it (see the Reference, Section 16).
 
 ---
 
@@ -116,7 +122,7 @@ Recommend 1 minimum — rare, but a great character moment.
 
 ### Combat & Violence
 
-**Civilian Combat / Civilian Killed** (`COM_Event_Action_CivilianCombat_Common` / `CivilianKilled_Common`) : Player attacks / kills someone the companion considers a civilian. ⚠ These are **not** sent by the standard action-event script — they route through the crime/anger system, and they double as the main vanilla **anger triggers**. Who counts as a "civilian" is defined by the Shared Crime Faction List on your companion's Personal Crime Faction, so a criminal companion can be set up to shrug at dead pirates.
+**Civilian Combat / Civilian Killed** (`COM_Event_Action_CivilianCombat_Common` / `CivilianKilled_Common`) : Player attacks / kills someone the companion considers a civilian. ⚠ These are **not** sent by the standard action-event script — they route through the crime/anger system, and they double as the main vanilla **anger triggers**. Who counts as a "civilian" is defined by the shared crime list on your companion's Personal Crime Faction, so a criminal companion can be set up to shrug at dead pirates. Attacking a civilian makes the companion **leave immediately**. A kill's consequence depends on the anger level you assign it: *Annoyed* = they stay, *Angry*/*Furious* = they leave. The faction's "ignore crimes" checkboxes and the actor's Morality setting do **not** change any of this.
 *"That one wasn't shooting back, chief."*
 Recommend 3 minimum each, plus anger-confrontation dialogue if these are your companion's line.
 
@@ -209,14 +215,14 @@ Some events look global but aren't. Example: the charity event is actually `Dial
 
 ## B) Comment Triggers
 
-Location-based reactions — **~319 in vanilla**, covering cities, dungeons, quest locations, and points of interest. Each form includes a written description of what the companion is seeing, so the writer has context without visiting in-game.
+Location-based reactions — **319 in vanilla**, covering cities, dungeons, quest locations, and points of interest. Each form includes a written description of what the companion is seeing, so the writer has context without visiting in-game.
 
 You don't write all 319. Pick:
 - **Major cities** your companion has opinions about (New Atlantis, Neon, Akila City, The Key…)
 - **Locations tied to their backstory**
 - **Landmarks** where their personality would shine
 
-Comment Triggers allow repeats and default to INDIFFERENT (pure flavor, no points). Filter for `COM_Event_CommentTrigger_` in the CK for the full list.
+Vanilla comment triggers are INDIFFERENT (pure flavor, no points). By default each placed trigger plays **once per companion** (a setting on the trigger, with a 1-day cooldown on the event). The **22 generic triggers** (`COM_Event_CommentTrigger_Generic_*`: caves, loot, Starborn temples, and so on) are placed all over the game and are meant to repeat. Generic lines are the cheapest flavor in the game: the writer just writes a pool of lines per theme, and nothing needs placing. Filter for `COM_Event_CommentTrigger_` in the CK for the full list. For how to place new triggers or hook into existing ones, see the official [Comment Triggers](https://starfield.creationkit.bethesda.net/Comment_Triggers) page.
 
 ---
 
@@ -230,19 +236,25 @@ Here's the surprise in the vanilla data: all four vanilla companions are **INDIF
 - Don't just plan reactions for quest *outcomes* — plan them for the dialogue *en route*. That's where personality lives.
 - Vanilla left the big choice itself unreacted. If your companion takes a real stance on the outcome (via a quest event or a Direct event), you're already doing more with the moment than Bethesda did.
 
+Scripter: dialogue-response events are attached to the player's line in the scene (*New Affinity Event* on the Topic Info, from the template `COM_Event_DialogueResponse_AAA`). See "Adding Affinity Events to Player Lines" on the official [Setting Up Companion Interjections](https://starfield.creationkit.bethesda.net/Setting_Up_Companion_Interjections) page. To add your companion to a **vanilla** quest's existing response event, use *Add to Event*, not an edit.
+
 ---
 
 ## D) WantsToTalk & Direct Events
 
-**WantsToTalk events** make the companion approach the player for story-gate conversations, with per-event distance and cooldown settings. Plan one per story gate.
+**WantsToTalk events** are **quest-reaction** conversations, not story gates. When the player finishes a major quest, the quest fires its WantsToTalk event. That flags every companion on the event (e.g. `COM_WantsToTalk_MQ104A = 1`), and the companion now has a "we need to talk about what just happened" greeting. When that scene ends, `TalkAboutQuestEventSceneEnded()` clears the flag. Vanilla has them for **MQ104A, MQ106, MQ204, MQ207, MQ305**, the four faction finales (**Crimson Fleet, Freestar Collective, Ryujin, United Colonies**) and Barrett's personal-quest follow-up. They fire once (not repeatable).
 
-**Direct events** are your scripter's manual lever: each companion gets a set of four (`Likes` / `Dislikes` / `Loves` / `Hates`) that quest scripts fire to award affinity for moments no automatic event covers — personal quest choices, gifts, anything custom.
+Each one is a strong writing prompt: what does your companion think about the player entering the Unity, or the outcome of the Crimson Fleet questline? Plan a short conversation for each vanilla one your companion should have an opinion on, and add the companion to the event with *Add to Event*.
+
+Story gates use a different mechanism, a follow-time timer (section E). Both kinds end up showing the same "wants to talk" objective.
+
+**Direct events** are your scripter's manual lever: each companion gets a set of four (`COM_Event_Direct_<Name>_Likes` / `_Dislikes` / `_Loves` / `_Hates`) that quest scripts fire to award affinity for moments no automatic event covers — personal quest choices, gifts, anything custom. They're also the only way to **lower** affinity from script; the script affinity-add function only accepts positive amounts.
 
 ---
 
 ## E) Story Gates
 
-Timed relationship milestones: affinity threshold reached → in-game timer runs → companion wants to talk → personal conversation scene → next gate begins. Plan **4-8 gates**, escalating from casual to personal:
+Timed relationship milestones: the companion travels with the player → a gate timer runs (real time, only while they're the active companion) → the companion wants to talk → personal conversation scene → the next gate's timer starts. Vanilla timers: gate 1 = 30 minutes, every later gate = 60 minutes. The vanilla system supports **8 gates**. Andreja's structure is a good model: gate 5 introduces her personal quest (`SG05_QuestIntro`) and gate 7 opens commitment (`SG07_CommitmentIntroScene`). Plan **4–8 gates**, escalating from casual to personal:
 
 | Gate | Suggested Focus |
 |------|----------------|
@@ -322,4 +334,4 @@ Each gate is a full conversation scene with branches. If your companion is roman
 
 ---
 
-*Sources: `CompanionAffinityEventsScript.psc`, `AffinityEvent.psc`, `CompanionAffinityScript.psc` (Starfield Data/Scripts/Source), plus a CK data dump of all vanilla affinity event forms. Fire conditions, thresholds (gravity 1.5g/0.5g, 40m hostile radius), the shared cooldown, the dead UseWorkbench event, and the unreachable ZeroG branch are all verified against those sources.*
+*Sources: `CompanionAffinityEventsScript.psc`, `AffinityEvent.psc`, `CompanionAffinityScript.psc`, `COM_CompanionQuestScript.psc`, `COM_CommentTriggerScript.psc`, `SQ_CompanionsScript.psc`, `SQ_Companions_ActiveCompanionScript.psc` (Starfield Data/Scripts/Source); affinity event, global and quest records read from `Starfield.esm` and the official add-on plugins; the official [Starfield CK wiki](https://starfield.creationkit.bethesda.net/Main_Page). Fire conditions, thresholds (gravity 1.5g/0.5g, 40m hostile radius), cooldown values, repeat flags, anger-level behavior, the dead UseWorkbench event, and the unreachable ZeroG branch are all verified against those sources.*

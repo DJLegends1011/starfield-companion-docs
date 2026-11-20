@@ -15,7 +15,10 @@ This repository contains **documentation only** - no mod files, no copyrighted c
 | `CompanionAffinityEvents.csv` | Data dump of every vanilla affinity event form (~46 Action, ~319 CommentTrigger, plus DialogueResponse/WantsToTalk/Direct) with descriptions and per-companion reactions — source data for the section above |
 
 ### Aflin & DJLegend's Starfield NPC Template
-The Affinity Events section here is our contribution to the **Starfield NPC Template**, a designer-to-scripter worksheet co-authored with [Aflin](https://www.nexusmods.com/skyrimspecialedition/mods/138633) (author of the original Skyrim NPC Template). **Aflin will be releasing the Starfield template on Nexus soon** — once it's live, a link will be added here. The three docs are designed to work together: the Template covers *what to write*, the Creation Guide *how to build it*, and the System Reference *why it works*.
+The Affinity Events section here is our contribution to **[Aflin and DJLegend's Starfield NPC Template](https://www.nexusmods.com/starfield/mods/17694)** on Nexus Mods, a designer-to-scripter worksheet co-authored with Aflin (author of the original [Skyrim NPC Template](https://www.nexusmods.com/skyrimspecialedition/mods/138633)). The file in this repo is the maintained copy of that section; corrections land here first. The docs are designed to work together: the Template covers *what to write*, the Creation Guide *how to build it*, and the System Reference *why it works*.
+
+### Official Creation Kit Wiki
+Bethesda's [Starfield Creation Kit wiki](https://starfield.creationkit.bethesda.net/Main_Page) is now public. Start with [Creating Crew and Companions](https://starfield.creationkit.bethesda.net/Creating_Crew_and_Companions). The wiki covers generic follower setup; these docs cover the companion layer it doesn't (`COM_CompanionQuestScript`, affinity internals, anger, romance, story gates, compatibility) and link to the wiki wherever the two overlap.
 
 ### Example Implementation
 Example implementation available when Nexus release of my companion comes out.
@@ -26,12 +29,15 @@ Bethesda built a deep, flexible companion system for Starfield — per-companion
 
 1. **Reverse-engineer** how the system actually works
 2. **Document** the scripts, properties, and systems involved
-3. **Provide** a practical example (Cass) that others can learn from
+3. **Provide** practical, vanilla-verified examples others can learn from
 4. **Enable** modders to create companions that feel genuinely distinct — equal to or better than vanilla
 
 ## Key Technical Discoveries
 
-- **Anger System:** `AmIAngry()` checks for AngerLevel >= 2, so Level 1 (Annoyed) won't trigger auto-dismiss
+- **Compatibility:** never edit vanilla affinity events or shared FormLists. Use the CK's *Add to Event* (affinity events) and *Add to List* (FormLists) fields, the same pattern Bethesda's own add-ons use. *Add to Event* was added after we reported the override conflict
+- **Anger System:** auto-dismiss is a per-level flag. In vanilla, Angry and Furious dismiss the companion and Annoyed doesn't
+- **Crime tolerance:** the personal crime faction's "ignore crimes" checkboxes and the actor's Morality setting have no effect on companion reactions
+- **WantsToTalk events** are quest-reaction talks (MQ104A, MQ106, MQ204, MQ207, MQ305, faction finales), not story gates
 - **WantsToTalk:** `COM_CND_WantsToTalk_Standard` is shared by all companions
 - **Story Gates:** Vanilla provides `COM_StoryGate_TimerDuration_01-08_Standard` GlobalVariables
 - **Distance:** Starfield uses meters (not old Bethesda units)
@@ -66,4 +72,4 @@ Documentation is provided freely for educational purposes. Use it to make cool c
 
 ---
 
-*Last Updated: 2026-07-01*
+*Last Updated: 2026-11-19*

@@ -294,7 +294,7 @@ These checkboxes control which crimes the companion *ignores* when committed aga
 | Trespass | ☑ Checked | Ignores trespassing |
 | Piracy | ☑ Checked | Ignores piracy |
 
-**For Cass (Criminal Background):** Consider checking MORE boxes (ignoring more crimes) since she has `Morality: Any Crime`.
+> ⚠ **Correction (2026-11-19):** these checkboxes and the actor's Morality setting do **not** change how a companion reacts to crimes; `CompanionCrimeResponseScript` ignores them. See *Companion_System_Reference.md*, Section 15, "what actually changes a companion's tolerance". This guide is being rewritten.
 
 **Shared Crime Faction List:**
 
@@ -1033,9 +1033,9 @@ Reference character design document for appropriate morality level.
 
 ### A8. CUSTOM FACTION FOR FORMER AFFILIATION
 
-For characters with past faction ties (like Cass with Crimson Fleet):
+For characters with past faction ties (e.g., a former Crimson Fleet pirate):
 
-**Problem:** Don't want her treated as current Fleet member (combat issues)
+**Problem:** Don't want them treated as a current Fleet member (combat issues)
 
 **Solution:** Create `CrimsonFleetFormerFaction`
 - NOT the same as `CrimsonFleetFaction`
@@ -1060,7 +1060,7 @@ The "FormerAffiliationFaction" is useful for characters with past ties to factio
 
 This guide is intentionally generic to serve as a universal reference. To create a specific companion:
 
-1. **Find the companion's design document** (e.g., `Cass_GDD_v1.md`, `Andreja_Breakdown_ARCHIVE.md`)
+1. **Find the companion's design document** (your GDD, or a filled-out [Starfield NPC Template](https://www.nexusmods.com/starfield/mods/17694))
 2. **Extract character-specific information:**
    - Personality, speech patterns, unique behaviors
    - Faction affiliations and morality
